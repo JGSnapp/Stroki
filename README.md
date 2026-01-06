@@ -2,6 +2,8 @@
 
 Create a new SearXNG instance in five minutes using Docker
 
+The stack now includes an optional Streamlit-based browser UI (see [`frontend/`](frontend/)) that provides a simple search bar and displays results returned by SearXNG.
+
 ## What is included?
 
 | Name                                          | Description                                                    | Docker image                                                                 | Dockerfile                                                                                                                                                                                    |

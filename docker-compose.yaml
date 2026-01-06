@@ -51,6 +51,24 @@ services:
         max-size: "1m"
         max-file: "1"
 
+  frontend:
+    container_name: searxng-frontend
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - searxng
+    networks:
+      - searxng
+    ports:
+      - "8501:8501"
+    environment:
+      - SEARXNG_URL=http://searxng:8080
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1m"
+        max-file: "1"
+
 networks:
   searxng:
 
