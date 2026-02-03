@@ -1,79 +1,90 @@
 services:
-  caddy:
-    container_name: caddy
-    image: docker.io/library/caddy:2-alpine
-    network_mode: host
-    restart: unless-stopped
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data:rw
-      - caddy-config:/config:rw
-    environment:
-      - SEARXNG_HOSTNAME=${SEARXNG_HOSTNAME:-http://localhost}
-      - SEARXNG_TLS=${LETSENCRYPT_EMAIL:-internal}
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "1m"
-        max-file: "1"
-
-  redis:
-    container_name: redis
-    image: docker.io/valkey/valkey:8-alpine
-    command: valkey-server --save 30 1 --loglevel warning
-    restart: unless-stopped
-    networks:
-      - searxng
-    volumes:
-      - valkey-data2:/data
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "1m"
-        max-file: "1"
-
-  searxng:
-    container_name: searxng
-    image: docker.io/searxng/searxng:latest
-    restart: unless-stopped
-    networks:
-      - searxng
-    ports:
-      - "127.0.0.1:8080:8080"
-    volumes:
-      - ./searxng:/etc/searxng:rw
-      - searxng-data:/var/cache/searxng:rw
-    environment:
-      - SEARXNG_BASE_URL=https://${SEARXNG_HOSTNAME:-localhost}/
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "1m"
-        max-file: "1"
-
   frontend:
-    container_name: searxng-frontend
-    build: ./frontend
-    restart: unless-stopped
-    depends_on:
-      - searxng
-    networks:
-      - searxng
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
     ports:
-      - "8501:8501"
-    environment:
-      - SEARXNG_URL=http://searxng:8080
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "1m"
-        max-file: "1"
+      - "3000:3000"
+    depends_on:
+      - agent_server
 
-networks:
-  searxng:
+  nginx:
+    build: ./nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - frontend
+      - agent_server
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    environment:
+      - NGINX_HOST=jgsnapp.ru
+      - NGINX_PORT=80
+      - NGINX_SSL_PORT=443
+  agent_server:
+    build:
+      context: ./agent_server
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+    env_file:
+      - .env
+    environment:
+      PROXY_MODEL: ${PROXY_MODEL}
+      PROXY_API_KEY: ${PROXY_API_KEY}
+      PROXY_BASE_URL: ${PROXY_BASE_URL}
+      XMLSTOCK_GOOGLE_URL: ${XMLSTOCK_GOOGLE_URL}
+      XMLSTOCK_YANDEXLIVE_URL: ${XMLSTOCK_YANDEXLIVE_URL}
+      SAVE_LOGS: ${SAVE_LOGS}
+      MAX_CONCURRENCY: ${MAX_CONCURRENCY:-4}
+      DATABASE_URL: postgresql://stroky:stroky@postgres:5432/stroky
+      UPLOAD_DIR: /app/uploads
+      IP_HASH_SALT: stroky_salt
+    volumes:
+      - ./data/uploads:/app/uploads
+      - ./logs:/logs
+      - ./.env:/app/.env:ro
+
+  postgres:
+    image: ankane/pgvector
+    container_name: postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: stroky
+      POSTGRES_USER: stroky
+      POSTGRES_PASSWORD: stroky
+    env_file:
+      - .env
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@example.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+    ports:
+      - "${PGADMIN_PORT:-8080}:80"
+    depends_on:
+      - postgres
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+
 
 volumes:
-  caddy-data:
-  caddy-config:
-  valkey-data2:
-  searxng-data:
+  pgdata:
+  pgadmin_data:

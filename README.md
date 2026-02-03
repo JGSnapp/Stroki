@@ -1,121 +1,144 @@
-# searxng-docker
+# Stroki
 
-Create a new SearXNG instance in five minutes using Docker
+Сервис для автоматического заполнения таблиц (CSV/XLSX) по данным из интернета с использованием LLM и поиска.
 
-The stack now includes an optional Streamlit-based browser UI (see [`frontend/`](frontend/)) that provides a simple search bar and displays results returned by SearXNG.
+## Возможности
 
-## What is included?
+- Загрузка CSV/XLSX, автоопределение входных столбцов и целевых задач (до 3 входов и до 3 задач).
+- Поиск информации в интернете через XMLStock (Google) и извлечение ответов LLM.
+- Поиск картинок через XMLStock (Yandex Live) с фильтрацией водяных знаков.
+- Прогресс обработки по сессии.
+- Логи поисковых запросов и статистика запусков.
 
-| Name                                          | Description                                                    | Docker image                                                                 | Dockerfile                                                                                                                                                                                    |
-|-----------------------------------------------|----------------------------------------------------------------|------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| [Caddy](https://github.com/caddyserver/caddy) | Reverse proxy (create a LetsEncrypt certificate automatically) | [docker.io/library/caddy:2-alpine](https://hub.docker.com/_/caddy)           | [Dockerfile](https://github.com/caddyserver/caddy-docker/blob/master/Dockerfile.tmpl)                                                                                                         |
-| [SearXNG](https://github.com/searxng/searxng) | SearXNG by itself                                              | [docker.io/searxng/searxng:latest](https://hub.docker.com/r/searxng/searxng) | [builder.dockerfile](https://github.com/searxng/searxng/blob/master/container/builder.dockerfile) [dist.dockerfile](https://github.com/searxng/searxng/blob/master/container/dist.dockerfile) |
-| [Valkey](https://github.com/valkey-io/valkey) | In-memory database                                             | [docker.io/valkey/valkey:8-alpine](https://hub.docker.com/r/valkey/valkey)   | [Dockerfile](https://github.com/valkey-io/valkey-container/blob/mainline/Dockerfile.template)                                                                                                 |
+## Архитектура
 
-## How to use it
+Сервисы (см. `docker-compose.yaml`):
 
-There are two ways to host SearXNG. The first one doesn't require any prior knowledge about self-hosting and thus is
-recommended for beginners. It includes caddy as a reverse proxy and automatically deals with the TLS certificates for
-you. The second one is recommended for more advanced users that already have their own reverse proxy (e.g. Nginx,
-HAProxy, ...) and probably some other services running on their machine. The first few steps are the same for both
-installation methods however.
+- `frontend` — React UI, загружает файл и показывает прогресс.
+- `agent_server` — FastAPI + обработчик строк, LLM, интеграции поиска.
+- `postgres` — хранение сессий, загрузок, опросов.
+- `nginx` — reverse proxy и SSL.
+- `pgadmin` — админка базы (опционально).
 
-1. [Install docker](https://docs.docker.com/install/)
-2. Get searxng-docker
+Ключевые компоненты внутри `agent_server`:
 
-```shell
-cd /usr/local
-git clone https://github.com/searxng/searxng-docker.git
-cd searxng-docker
+- `main.py` — API, пайплайн обработки строк, прогресс, работа с БД.
+- `xml_search.py` — Google XMLStock: поиск, ретраи, rate limit.
+- `xml_images.py` — Yandex Live XMLStock: поиск картинок, ретраи, rate limit.
+- `watermark.py` — фильтрация картинок с водяными знаками.
+- `rate_limiter.py` — общие воркеры и очередь на запросы к XMLStock.
+
+### Поток данных
+
+1) Пользователь отправляет файл + запрос (UI/HTTP).
+2) `agent_server` сохраняет загрузку и инициирует сессию.
+3) LLM выбирает `inputs` и `tasks` (до 3).
+4) Для каждой строки запускается поиск (Google XMLStock), выбираются релевантные страницы.
+5) LLM формирует ответы для `tasks`.
+6) При необходимости запускается поиск картинок (Yandex Live XMLStock).
+7) Результат сохраняется в CSV/XLSX и отдается пользователю.
+
+### Ограничение запросов и воркеры
+
+Для соблюдения лимитов поставщика используются общие воркеры:
+
+- Google XMLStock: пул `XML_SEARCH_WORKERS`, задержка между запросами `XML_SEARCH_DELAY_BASE` + `XML_SEARCH_DELAY_JITTER`.
+- Yandex Live XMLStock: пул `XML_IMAGES_WORKERS`, задержка между запросами `XML_IMAGES_DELAY_BASE` + `XML_IMAGES_DELAY_JITTER`.
+
+Распределение запросов между воркерами — round-robin.
+
+## Установка и запуск
+
+Требования:
+
+- Docker и Docker Compose.
+
+Шаги:
+
+1) Скопируйте `.env` и заполните ключи API:
+   - `PROXY_API_KEY`
+   - `PROXY_BASE_URL`
+   - `XMLSTOCK_GOOGLE_URL`
+   - `XMLSTOCK_YANDEXLIVE_URL`
+2) Запуск:
+
+```bash
+docker compose up -d --build
 ```
 
-3. Edit the [.env](https://github.com/searxng/searxng-docker/blob/master/.env) file to set the hostname and an email
-4. Generate the secret key `sed -i "s|ultrasecretkey|$(openssl rand -hex 32)|g" searxng/settings.yml`  
-   On a Mac: `sed -i '' "s|ultrasecretkey|$(openssl rand -hex 32)|g" searxng/settings.yml`
-5. Edit [searxng/settings.yml](https://github.com/searxng/searxng-docker/blob/master/searxng/settings.yml) according to
-   your needs
+3) Логи:
 
-> [!NOTE]
-> Windows users can use the following powershell script to generate the secret key:
-> ```powershell
-> $randomBytes = New-Object byte[] 32
-> (New-Object Security.Cryptography.RNGCryptoServiceProvider).GetBytes($randomBytes)
-> $secretKey = -join ($randomBytes | ForEach-Object { "{0:x2}" -f $_ })
-> (Get-Content searxng/settings.yml) -replace 'ultrasecretkey', $secretKey | Set-Content searxng/settings.yml
-> ```
-
-### Method 1: With Caddy included (recommended for beginners)
-
-6. Run SearXNG in the background: `docker compose up -d`
-
-### Method 2: Bring your own reverse proxy (experienced users)
-
-6. Remove the caddy related parts in `docker-compose.yaml` such as the caddy service and its volumes.
-7. Point your reverse proxy to the port set for the `searxng` service in `docker-compose.yml` (8080 by default).
-8. Generate and configure the required TLS certificates with the reverse proxy of your choice.
-9. Run SearXNG in the background: `docker compose up -d`
-
-> [!NOTE]
-> You can change the port `searxng` listens on inside the docker container (e.g. if you want to operate in `host`
-> network mode) with the `BIND_ADDRESS` environment variable (defaults to `[::]:8080`). The environment variable can be
-> set directly inside `docker-compose.yaml`.
-
-## Troubleshooting - How to access the logs
-
-To access the logs from all the containers use: `docker compose logs -f`.
-
-To access the logs of one specific container:
-
-- Caddy: `docker compose logs -f caddy`
-- SearXNG: `docker compose logs -f searxng`
-- Valkey: `docker compose logs -f redis`
-
-### Start SearXNG with systemd
-
-You can skip this step if you don't use systemd.
-
-1. Copy the service template file:
-   ```sh
-   cp searxng-docker.service.template searxng-docker.service
-   ```
-
-2. Edit the content of ```WorkingDirectory``` in the ```searxng-docker.service``` file (only if the installation path is
-   different from ```/usr/local/searxng-docker```)
-
-3. Enable the service:
-   ```sh
-   systemctl enable $(pwd)/searxng-docker.service
-   ```
-
-4. Start the service:
-   ```sh
-   systemctl start searxng-docker.service
-   ```
-
-**Note:** Ensure the service file path matches your installation directory before enabling it.
-
-## Multi Architecture Docker images
-
-Supported architecture:
-
-- amd64
-- arm64
-- arm/v7
-
-## How to update ?
-
-To update the SearXNG stack:
-
-```sh
-git pull
-docker compose pull
-docker compose up -d
+```bash
+docker compose logs -f agent_server
 ```
 
-Or the old way (with the old docker-compose version):
+## Конфигурация (`.env`)
 
-```sh
-git pull
-docker-compose pull
-docker-compose up -d
+Основные параметры:
+
+- `PROXY_MODEL`, `PROXY_API_KEY`, `PROXY_BASE_URL` — доступ к LLM.
+- `XMLSTOCK_GOOGLE_URL`, `XMLSTOCK_YANDEXLIVE_URL` — XMLStock endpoints.
+- `MAX_CONCURRENCY` — параллелизм по строкам.
+- `XML_SEARCH_WORKERS` — число воркеров Google (поиск).
+- `XML_IMAGES_WORKERS` — число воркеров Yandex (картинки).
+- `XML_SEARCH_DELAY_BASE`, `XML_SEARCH_DELAY_JITTER` — задержка между поисковыми запросами.
+- `XML_IMAGES_DELAY_BASE`, `XML_IMAGES_DELAY_JITTER` — задержка между запросами картинок.
+- `LLM_RETRIES`, `LLM_RETRY_WAIT` — ретраи LLM и пауза.
+- `SAVE_LOGS` — запись логов поисковых запросов.
+- `RECURSION_LIMIT` — лимит глубины графа.
+
+Пример:
+
+```env
+MAX_CONCURRENCY=6
+XML_SEARCH_WORKERS=12
+XML_IMAGES_WORKERS=3
+XML_SEARCH_DELAY_BASE=0.1
+XML_SEARCH_DELAY_JITTER=0.9
+XML_IMAGES_DELAY_BASE=1.0
+XML_IMAGES_DELAY_JITTER=0.0
+LLM_RETRIES=3
+LLM_RETRY_WAIT=2.0
 ```
+
+## API
+
+Основные эндпоинты:
+
+- `POST /api/process` — обработка файла (multipart: `file`, `query`, `session_id`).
+- `POST /api/session/start` — создание сессии.
+- `POST /api/session/end` — завершение сессии.
+- `GET /api/progress?session_id=...` — прогресс.
+- `POST /api/survey` — сохранение опроса.
+
+## Форматы входа/выхода
+
+- Вход: CSV, XLSX.
+- Выход: CSV/XLSX с добавленными столбцами задач и/или картинок `image_1..image_5`.
+
+## Логи и диагностика
+
+- Поисковые логи: `logs/xml_search/*.json`
+- Статистика запуска: `logs/count_*.txt`
+- Общие логи: `docker compose logs -f agent_server`
+
+Если видите ошибки 110/20 от XMLStock — увеличьте задержки или уменьшите воркеры.
+
+## Разработка
+
+Локально:
+
+```bash
+docker compose up -d --build
+```
+
+Код:
+
+- `agent_server/` — backend
+- `frontend/` — UI
+- `nginx/` — reverse proxy
+
+## Ограничения
+
+- Производительность зависит от лимитов XMLStock и LLM.
+- Частые 110/202/20 ошибки означают перегрузку поставщика.

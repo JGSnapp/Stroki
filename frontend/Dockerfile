@@ -1,13 +1,37 @@
-FROM python:3.11-slim
+FROM node:18-bookworm
 
-WORKDIR /app
+WORKDIR /usr/src/app
 
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+# Install openssl to generate a self-signed certificate
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends openssl \
+  && rm -rf /var/lib/apt/lists/*
 
-COPY app.py ./
+COPY package*.json ./
 
-EXPOSE 8501
-ENV SEARXNG_URL=http://searxng:8080
+RUN npm install
 
-CMD ["streamlit", "run", "app.py", "--server.address=0.0.0.0", "--server.port=8501"]
+COPY . .
+
+# Generate a self-signed certificate for HTTPS dev server (with SAN)
+RUN mkdir -p /certs \
+  && openssl req -x509 -nodes -newkey rsa:2048 \
+    -keyout /certs/server.key \
+    -out /certs/server.crt \
+    -days 365 \
+    -subj "/CN=localhost" \
+    -addext "subjectAltName=DNS:localhost"
+
+# Configure CRA to use HTTPS with the generated cert
+ENV HTTPS=true \
+    SSL_CRT_FILE=/certs/server.crt \
+    SSL_KEY_FILE=/certs/server.key \
+    HOST=0.0.0.0 \
+    PORT=3000 \
+    BROWSER=none \
+    DANGEROUSLY_DISABLE_HOST_CHECK=true \
+    NODE_OPTIONS=--max-old-space-size=512
+
+EXPOSE 3000
+
+CMD ["npm", "start"]
