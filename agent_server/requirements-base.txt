@@ -1,0 +1,13 @@
+fastapi==0.112.2
+uvicorn==0.30.6
+requests==2.32.3
+pydantic==2.8.2
+langchain-core==0.2.40
+langchain-openai==0.1.22
+langgraph==0.2.21
+langchain_community
+sqlalchemy
+psycopg2-binary
+openpyxl==3.1.5
+python-multipart==0.0.9
+python-dotenv==1.0.1
