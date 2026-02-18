@@ -9,3 +9,13 @@ data/uploads
 
 logs/
 data/
+
+# SSL certificates and private keys
+nginx/certs/*.pem
+nginx/certs/*.key
+nginx/certs/*.crt
+
+# Node modules
+node_modules/
+admin/node_modules/
+frontend/node_modules/

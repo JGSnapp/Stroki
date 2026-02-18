@@ -234,35 +234,16 @@ export default function App() {
   return (
     <div className="page">
       <header className="page-title">
-        <h1>Strok1</h1>
-        <p>Демо-режим: количество строк ограничено до 300.</p>
-        <p className="page-title-note">
-          Инструкция: загрузите CSV/XLSX, опишите задачу одной строкой и нажмите «Запустить».
+        <div className="page-title-brand">
+          <span className="page-title-logo">Stroki</span>
+          <span className="page-title-badge">демо</span>
+        </div>
+        <p className="page-title-tagline">
+          Загружайте таблицы — мы найдём данные для каждой строки автоматически
         </p>
-      </header>
-
-      <header className="hero">
-        <div>
-          <p className="hero-tag">Stroki Agent</p>
-          <h1>Автоматизируйте поиск и заполнение данных для каждой строки</h1>
-          <p className="hero-subtitle">
-            Загружайте CSV/XLSX, описывайте задачу одним запросом, а сервис сам выберет колонки и заполнит результат.
-          </p>
-        </div>
-        <div className="hero-panel">
-          <div>
-            <p className="panel-label">Endpoint</p>
-            <p className="panel-value">{endpoint}</p>
-          </div>
-          <div>
-            <p className="panel-label">Формат</p>
-            <p className="panel-value">CSV / XLSX</p>
-          </div>
-          <div>
-            <p className="panel-label">Images</p>
-            <p className="panel-value">Опционально до 5</p>
-          </div>
-        </div>
+        <p className="page-title-note">
+          В демо-режиме обрабатывается до 300 строк. Загрузите CSV или XLSX и опишите задачу одной фразой.
+        </p>
       </header>
 
       <SurveyModal
@@ -276,52 +257,64 @@ export default function App() {
       <main>
         <form className="card" onSubmit={handleSubmit}>
           <div className="card-header">
-            <h2>Запуск обработки</h2>
+            <h2>Загрузите файл и опишите задачу</h2>
             <p>
-              Опишите задачу: что нужно найти для каждой строки и для чего подбирать картинки. Колонки выберет модель.
+              Модель сама разберёт структуру таблицы, выберет нужные колонки и вернёт заполненный файл.
             </p>
           </div>
 
           <div className="form-grid">
             <label className="field">
-              <span>Файл CSV/XLSX</span>
-              <input
-                type="file"
-                accept=".csv,.xlsx,.xlsm,.xltx,.xltm"
-                onChange={handleFileChange}
-              />
-              {file ? (
-                <span className="field-hint">
-                  {file.name} · {formatBytes(file.size)}
-                </span>
-              ) : (
-                <span className="field-hint">Выберите файл для загрузки</span>
-              )}
+              <span className="field-label">Файл с данными</span>
+              <div className="file-drop-zone">
+                <input
+                  type="file"
+                  accept=".csv,.xlsx,.xlsm,.xltx,.xltm"
+                  onChange={handleFileChange}
+                  className="file-input-native"
+                />
+                {file ? (
+                  <span className="file-chosen">
+                    <span className="file-chosen-icon">✓</span>
+                    {file.name}
+                    <span className="file-chosen-size">{formatBytes(file.size)}</span>
+                  </span>
+                ) : (
+                  <span className="file-placeholder">
+                    Выберите файл или перетащите сюда
+                  </span>
+                )}
+              </div>
+              <span className="field-hint">
+                Форматы: CSV, XLSX · Максимум 300 строк в демо-режиме
+              </span>
             </label>
 
             <label className="field">
-              <span>Введите запрос</span>
+              <span className="field-label">Задача</span>
               <textarea
-                rows={3}
+                rows={4}
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Найди отрасль и описание компании, подбери 3 изображения для маркетинга"
+                placeholder="Например: найди отрасль и сайт компании, без картинок"
               />
               <span className="field-hint">
-                Расскажите, что хотите найти для каждой строки. Также скажите, для чего хотите подобрать картинки.
+                Опишите, что нужно найти для каждой строки. Если изображения не нужны — так и напишите.
               </span>
             </label>
           </div>
 
           <div className="actions">
             <button className="primary" type="submit" disabled={status === 'loading'}>
-              {status === 'loading' ? 'Обработка...' : 'Запустить'}
+              {status === 'loading' ? 'Обрабатываем...' : 'Запустить'}
             </button>
+
             {result && (
-              <a className="ghost" href={result.url} download={result.name}>
-                Скачать результат
+              <a className="ghost download-link" href={result.url} download={result.name}>
+                ↓ Скачать результат
               </a>
             )}
+
             {status === 'loading' && progress && progress.total > 0 ? (
               <div className="progress">
                 <div className="progress-track">
@@ -329,13 +322,15 @@ export default function App() {
                 </div>
                 <span className="progress-text">
                   {progress.done} / {progress.total}
+                  {progress.status ? <span className="progress-status"> · {progress.status}</span> : null}
                 </span>
               </div>
             ) : null}
+
             <div className="status">
               {status === 'success' && result ? (
-                <span>
-                  Готово: {result.name} · {formatBytes(result.size)}
+                <span className="status-success">
+                  Готово! {result.name} · {formatBytes(result.size)}
                 </span>
               ) : null}
               {status === 'error' && error ? <span className="error">{error}</span> : null}
@@ -344,17 +339,36 @@ export default function App() {
         </form>
 
         <section className="tips">
-          <div>
-            <h3>Подсказки</h3>
+          <div className="tips-text">
+            <h3>Как это работает</h3>
             <ul>
-              <li>Модель сама выберет до 3 inputs и до 3 tasks по названию колонок.</li>
-              <li>Если картинки не нужны, явно укажите это в запросе.</li>
-              <li>Результат вернется как файл с суффиксом _filled.</li>
+              <li>
+                <strong>Колонки выбираются автоматически</strong> — модель читает заголовки и сама решает,
+                какие данные использовать как входные.
+              </li>
+              <li>
+                <strong>Картинки опциональны</strong> — если они не нужны, укажите это явно в запросе,
+                чтобы ускорить обработку.
+              </li>
+              <li>
+                <strong>Результат — отдельный файл</strong> — исходник не меняется, вы получаете новый
+                файл с суффиксом <code>_filled</code>.
+              </li>
             </ul>
           </div>
-          <div className="tips-card">
-            <p className="tips-title">Пример запроса</p>
-            <code>Найди отрасль и описание компании, добавь 2 изображения для презентации</code>
+          <div className="tips-examples">
+            <div className="tips-card">
+              <p className="tips-title">Пример — компании</p>
+              <code>Найди отрасль и официальный сайт компании, картинки не нужны</code>
+            </div>
+            <div className="tips-card">
+              <p className="tips-title">Пример — маркетинг</p>
+              <code>Напиши короткое описание продукта и подбери 2 изображения для лендинга</code>
+            </div>
+            <div className="tips-card">
+              <p className="tips-title">Пример — аналитика</p>
+              <code>Определи страну и город по адресу, добавь координаты из открытых источников</code>
+            </div>
           </div>
         </section>
       </main>

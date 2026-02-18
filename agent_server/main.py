@@ -1,6 +1,7 @@
 import asyncio
 import csv
 import hashlib
+import hmac
 import io
 import json
 import logging
@@ -1229,6 +1230,25 @@ async def process_file(
     payload, media, out_name = await asyncio.to_thread(
         process_payload, data, filename, query, session_id
     )
+
+    # Estimate row count from progress state (set by process_payload)
+    progress_data = _get_progress(session_id)
+    rows_processed = int(progress_data.get("total", 0))
+
+    # Save result to disk and record in DB (best-effort, never blocks response)
+    try:
+        await asyncio.to_thread(
+            _store_result,
+            session_id,
+            filename,
+            out_name,
+            payload,
+            query,
+            rows_processed,
+        )
+    except Exception as exc:
+        logger.warning("Failed to store result: %s", exc)
+
     safe_name = urllib.parse.quote(out_name)
     return StreamingResponse(
         io.BytesIO(payload),
@@ -1265,5 +1285,316 @@ async def process_file_api_alias(
         query=query,
         session_id=session_id,
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ADMIN API
+# ─────────────────────────────────────────────────────────────────────────────
+
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "changeme")
+ADMIN_SECRET = os.getenv("ADMIN_SECRET", "stroki_admin_secret_key_change_me")
+_ADMIN_TOKEN: Optional[str] = None
+_ADMIN_TOKEN_LOCK = Lock()
+
+
+def _make_admin_token() -> str:
+    payload = f"{ADMIN_USERNAME}:{time.time()}"
+    sig = hmac.new(ADMIN_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return f"{payload}:{sig}"
+
+
+def _verify_admin_token(token: str) -> bool:
+    import hmac
+    global _ADMIN_TOKEN
+    with _ADMIN_TOKEN_LOCK:
+        return token == _ADMIN_TOKEN
+
+
+def _require_admin(request: Request) -> None:
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    token = auth[len("Bearer "):]
+    if not _verify_admin_token(token):
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+
+class AdminLoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class AdminLoginResponse(BaseModel):
+    token: str
+
+
+@app.post("/api/admin/login", response_model=AdminLoginResponse)
+async def admin_login(payload: AdminLoginRequest) -> AdminLoginResponse:
+    global _ADMIN_TOKEN
+    if payload.username != ADMIN_USERNAME or payload.password != ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Неверный логин или пароль.")
+    token = _make_admin_token()
+    with _ADMIN_TOKEN_LOCK:
+        _ADMIN_TOKEN = token
+    return AdminLoginResponse(token=token)
+
+
+@app.get("/api/admin/me")
+async def admin_me(request: Request) -> Dict[str, str]:
+    _require_admin(request)
+    return {"username": ADMIN_USERNAME}
+
+
+@app.get("/api/admin/stats")
+async def admin_stats(request: Request) -> Dict[str, Any]:
+    _require_admin(request)
+
+    def _fetch() -> Dict[str, Any]:
+        with _get_db_conn() as conn, conn.cursor() as cur:
+            today = datetime.now(timezone.utc).date().isoformat()
+
+            cur.execute("SELECT COUNT(*) FROM visitors")
+            total_visitors = cur.fetchone()[0]
+
+            cur.execute("SELECT COUNT(*) FROM sessions")
+            total_sessions = cur.fetchone()[0]
+
+            cur.execute("SELECT COUNT(*) FROM sessions WHERE started_at::date = %s", (today,))
+            sessions_today = cur.fetchone()[0]
+
+            cur.execute("SELECT COUNT(*) FROM uploads")
+            total_uploads = cur.fetchone()[0]
+
+            cur.execute("SELECT COUNT(*) FROM uploads WHERE created_at::date = %s", (today,))
+            uploads_today = cur.fetchone()[0]
+
+            cur.execute("SELECT COUNT(*) FROM results")
+            total_results = cur.fetchone()[0]
+
+            cur.execute("SELECT COUNT(*) FROM results WHERE created_at::date = %s", (today,))
+            results_today = cur.fetchone()[0]
+
+            cur.execute("SELECT COUNT(*) FROM surveys")
+            total_surveys = cur.fetchone()[0]
+
+            return {
+                "total_visitors": total_visitors,
+                "total_sessions": total_sessions,
+                "sessions_today": sessions_today,
+                "total_uploads": total_uploads,
+                "uploads_today": uploads_today,
+                "total_results": total_results,
+                "results_today": results_today,
+                "total_surveys": total_surveys,
+            }
+
+    return await asyncio.to_thread(_fetch)
+
+
+@app.get("/api/admin/sessions")
+async def admin_sessions(request: Request, limit: int = 200) -> List[Dict[str, Any]]:
+    _require_admin(request)
+
+    def _fetch() -> List[Dict[str, Any]]:
+        with _get_db_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT s.id, s.started_at, s.ended_at, s.user_agent, s.referrer,
+                       COUNT(DISTINCT u.id) AS uploads_count,
+                       COUNT(DISTINCT r.id) AS results_count
+                FROM sessions s
+                LEFT JOIN uploads u ON u.session_id = s.id
+                LEFT JOIN results r ON r.session_id = s.id
+                GROUP BY s.id
+                ORDER BY s.started_at DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            cols = [d[0] for d in cur.description]
+            rows = cur.fetchall()
+            result = []
+            for row in rows:
+                d = dict(zip(cols, row))
+                for k in ("started_at", "ended_at"):
+                    if d[k] is not None:
+                        d[k] = d[k].isoformat()
+                result.append(d)
+            return result
+
+    return await asyncio.to_thread(_fetch)
+
+
+@app.get("/api/admin/uploads")
+async def admin_uploads(request: Request, limit: int = 300) -> List[Dict[str, Any]]:
+    _require_admin(request)
+
+    def _fetch() -> List[Dict[str, Any]]:
+        with _get_db_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, session_id, original_name, stored_name, mime, size_bytes, sha256, created_at
+                FROM uploads
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            cols = [d[0] for d in cur.description]
+            rows = cur.fetchall()
+            result = []
+            for row in rows:
+                d = dict(zip(cols, row))
+                if d["created_at"] is not None:
+                    d["created_at"] = d["created_at"].isoformat()
+                d["id"] = str(d["id"])
+                d["session_id"] = str(d["session_id"])
+                result.append(d)
+            return result
+
+    return await asyncio.to_thread(_fetch)
+
+
+@app.get("/api/admin/results")
+async def admin_results(request: Request, limit: int = 300) -> List[Dict[str, Any]]:
+    _require_admin(request)
+
+    def _fetch() -> List[Dict[str, Any]]:
+        with _get_db_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, session_id, upload_original_name, result_name, stored_name,
+                       size_bytes, query, rows_processed, created_at
+                FROM results
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            cols = [d[0] for d in cur.description]
+            rows = cur.fetchall()
+            result = []
+            for row in rows:
+                d = dict(zip(cols, row))
+                if d["created_at"] is not None:
+                    d["created_at"] = d["created_at"].isoformat()
+                d["id"] = str(d["id"])
+                d["session_id"] = str(d["session_id"])
+                result.append(d)
+            return result
+
+    return await asyncio.to_thread(_fetch)
+
+
+@app.get("/api/admin/results/{result_id}/download")
+async def admin_result_download(result_id: str, request: Request) -> StreamingResponse:
+    _require_admin(request)
+
+    def _fetch():
+        with _get_db_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT stored_name, result_name FROM results WHERE id = %s",
+                (result_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Result not found")
+            return row
+
+    stored_name, result_name = await asyncio.to_thread(_fetch)
+    path = os.path.join(UPLOAD_DIR, stored_name)
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="File not found on disk")
+
+    with open(path, "rb") as f:
+        data = f.read()
+
+    ext = os.path.splitext(result_name)[1].lower()
+    if ext == ".csv":
+        media = "text/csv"
+    else:
+        media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    safe_name = urllib.parse.quote(result_name)
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type=media,
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{safe_name}"},
+    )
+
+
+@app.get("/api/admin/surveys")
+async def admin_surveys(request: Request, limit: int = 300) -> List[Dict[str, Any]]:
+    _require_admin(request)
+
+    def _fetch() -> List[Dict[str, Any]]:
+        with _get_db_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, session_id, purpose, additions, contact, created_at
+                FROM surveys
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            cols = [d[0] for d in cur.description]
+            rows = cur.fetchall()
+            result = []
+            for row in rows:
+                d = dict(zip(cols, row))
+                if d["created_at"] is not None:
+                    d["created_at"] = d["created_at"].isoformat()
+                d["id"] = str(d["id"])
+                d["session_id"] = str(d["session_id"])
+                result.append(d)
+            return result
+
+    return await asyncio.to_thread(_fetch)
+
+
+# ─── Helper: save result file to disk and record in DB ───────────────────────
+
+def _store_result(
+    session_id: str,
+    upload_original_name: str,
+    result_name: str,
+    data: bytes,
+    query: str,
+    rows_processed: int,
+    upload_id: Optional[str] = None,
+) -> None:
+    """Save processed result to disk and insert a record into the results table."""
+    ext = os.path.splitext(result_name)[1].lower() or ".csv"
+    date_dir = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    stored_dir = os.path.join(UPLOAD_DIR, date_dir)
+    os.makedirs(stored_dir, exist_ok=True)
+    stored_name = f"result_{uuid.uuid4().hex}{ext}"
+    stored_path = os.path.join(stored_dir, stored_name)
+
+    with open(stored_path, "wb") as f:
+        f.write(data)
+
+    relative_name = os.path.join(date_dir, stored_name).replace("\\", "/")
+    with _get_db_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO results
+              (session_id, upload_id, upload_original_name, result_name, stored_name,
+               size_bytes, query, rows_processed, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                session_id,
+                upload_id,
+                upload_original_name,
+                result_name,
+                relative_name,
+                len(data),
+                query,
+                rows_processed,
+                _utc_now(),
+            ),
+        )
 
 

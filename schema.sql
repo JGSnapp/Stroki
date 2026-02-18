@@ -45,3 +45,20 @@ CREATE TABLE IF NOT EXISTS surveys (
 
 CREATE INDEX IF NOT EXISTS idx_surveys_session_id ON surveys(session_id);
 CREATE INDEX IF NOT EXISTS idx_surveys_created_at ON surveys(created_at);
+
+-- Stores processed result files (saved to disk alongside uploads)
+CREATE TABLE IF NOT EXISTS results (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  session_id uuid NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  upload_id uuid REFERENCES uploads(id) ON DELETE SET NULL,
+  upload_original_name text NOT NULL,
+  result_name text NOT NULL,
+  stored_name text NOT NULL,
+  size_bytes bigint NOT NULL,
+  query text NOT NULL DEFAULT '',
+  rows_processed int NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_results_session_id ON results(session_id);
+CREATE INDEX IF NOT EXISTS idx_results_created_at ON results(created_at);
