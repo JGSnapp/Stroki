@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir:*)",
+      "Bash(cmd /c \"xcopy /E /I /Y \"\"C:\\\\Users\\\\JGSnapp\\\\Desktop\\\\Claude_projects\\\\Stroki\\\\.claude\\\\worktrees\\\\distracted-archimedes\\\\frontend\"\" \"\"C:\\\\Users\\\\JGSnapp\\\\Desktop\\\\Claude_projects\\\\Stroki\\\\.claude\\\\worktrees\\\\distracted-archimedes\\\\admin\"\"\")",
+      "Bash(powershell -Command:*)",
+      "Bash(robocopy:*)",
+      "Bash(echo:*)",
+      "Bash(\"C:\\\\Users\\\\JGSnapp\\\\Desktop\\\\Claude_projects\\\\Stroki\\\\.claude\\\\worktrees\\\\distracted-archimedes\\\\copy_frontend.ps1\" << 'PSEOF'\n$src = 'C:\\\\Users\\\\JGSnapp\\\\Desktop\\\\Claude_projects\\\\Stroki\\\\.claude\\\\worktrees\\\\distracted-archimedes\\\\frontend'\n$dst = 'C:\\\\Users\\\\JGSnapp\\\\Desktop\\\\Claude_projects\\\\Stroki\\\\.claude\\\\worktrees\\\\distracted-archimedes\\\\admin'\n\nif \\(-not \\(Test-Path $dst\\)\\) {\n    New-Item -ItemType Directory -Path $dst | Out-Null\n}\n\nGet-ChildItem -Path $src | Where-Object { $_.Name -ne 'node_modules' } | ForEach-Object {\n    if \\($_.PSIsContainer\\) {\n        Copy-Item -Path $_.FullName -Destination $dst -Recurse -Force\n    } else {\n        Copy-Item -Path $_.FullName -Destination $dst -Force\n    }\n}\n\nWrite-Host 'Copy complete.'\nPSEOF)",
+      "Bash(powershell -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\JGSnapp\\\\Desktop\\\\Claude_projects\\\\Stroki\\\\.claude\\\\worktrees\\\\distracted-archimedes\\\\copy_frontend.ps1\")"
+    ]
+  }
+}
