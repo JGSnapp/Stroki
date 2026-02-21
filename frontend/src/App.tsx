@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from 'react';
+import AdminApp from './AdminApp';
 import SurveyModal from './Components/SurveyModal';
 
 type ResultFile = {
@@ -52,7 +53,13 @@ const formatBytes = (bytes: number) => {
   return `${value.toFixed(value >= 10 || idx === 0 ? 0 : 1)} ${units[idx]}`;
 };
 
-export default function App() {
+const isAdminRequest = () => {
+  const hostname = window.location.hostname.toLowerCase();
+  const pathname = window.location.pathname.toLowerCase();
+  return hostname.startsWith('admin.') || pathname.startsWith('/admin');
+};
+
+function MainApp() {
   const [file, setFile] = useState<File | null>(null);
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
@@ -374,4 +381,12 @@ export default function App() {
       </main>
     </div>
   );
+}
+
+export default function App() {
+  if (isAdminRequest()) {
+    return <AdminApp />;
+  }
+
+  return <MainApp />;
 }

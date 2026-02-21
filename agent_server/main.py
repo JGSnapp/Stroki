@@ -82,7 +82,9 @@ SELECTION_PROMPT = (
     "You are given a user query and a list of table column names. "
     "Select up to 3 input columns (inputs) from the existing columns that will be used as context for each row. "
     "Select up to 3 task columns (tasks) that should be filled. Task columns may be new column names derived from the query. "
-    "Optionally select one existing column for image search (img_task) and an image count (img_count) from 1 to 5. "
+    "If the user asks for images/photos/pictures, you MUST set img_task and img_count. "
+    "img_task must be one existing column to search images for (pick the best item/name column). "
+    "img_count must be an integer from 1 to 5 (use 1 if the user did not specify a number). "
     "If images are not needed, set img_task and img_count to null. "
     "If no enrichment is needed, leave inputs and tasks empty."
 )
@@ -868,10 +870,31 @@ def _parse_list(value: str) -> List[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def _is_row_empty(row: Dict[str, Any]) -> bool:
+    for value in row.values():
+        if value is None:
+            continue
+        if isinstance(value, str):
+            if value.strip() == "":
+                continue
+            return False
+        return False
+    return True
+
+
+def _ensure_image_columns(columns: List[str]) -> None:
+    if "image_1" in columns:
+        return
+    for idx in range(1, 6):
+        col = f"image_{idx}"
+        if col not in columns:
+            columns.append(col)
+
+
 def _load_rows_from_csv(data: bytes) -> List[Dict[str, Any]]:
     text = data.decode("utf-8-sig")
     reader = csv.DictReader(io.StringIO(text))
-    return [row for row in reader]
+    return [row for row in reader if not _is_row_empty(row)]
 
 
 def _load_rows_from_xlsx(data: bytes) -> List[Dict[str, Any]]:
@@ -891,7 +914,8 @@ def _load_rows_from_xlsx(data: bytes) -> List[Dict[str, Any]]:
         row_dict: Dict[str, Any] = {}
         for idx, header in enumerate(headers):
             row_dict[header] = row[idx] if idx < len(row) else None
-        results.append(row_dict)
+        if not _is_row_empty(row_dict):
+            results.append(row_dict)
     return results
 
 
@@ -950,6 +974,9 @@ async def process_rows_async(
     session_id: Optional[str] = None,
     total_lines: Optional[int] = None,
     run_id: Optional[str] = None,
+    image_search_column: Optional[str] = None,
+    image_count_value: Optional[int] = None,
+    columns: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
     results: List[Optional[Dict[str, Any]]] = [None] * len(lines)
@@ -964,7 +991,18 @@ async def process_rows_async(
             processed = await asyncio.to_thread(
                 process_rows, [row_copy], inputs, tasks, None, 1, run_id
             )
-            results[idx] = processed[0] if processed else row_copy
+            processed_row = processed[0] if processed else row_copy
+            if image_search_column and image_count_value and columns is not None:
+                await asyncio.to_thread(
+                    process_images,
+                    [processed_row],
+                    columns,
+                    image_search_column,
+                    "",
+                    image_count_value,
+                    run_id,
+                )
+            results[idx] = processed_row
         if session_id:
             async with progress_lock:
                 completed += 1
@@ -972,6 +1010,99 @@ async def process_rows_async(
 
     await asyncio.gather(*(handle_row(idx, row) for idx, row in enumerate(lines)))
     return [results[idx] if results[idx] is not None else lines[idx] for idx in range(len(lines))]
+
+
+async def process_images_async(
+    rows: List[Dict[str, Any]],
+    columns: List[str],
+    image_search_column: str,
+    image_count_value: Optional[int],
+    session_id: Optional[str] = None,
+    run_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
+    progress_lock = asyncio.Lock()
+    completed = 0
+    total = len(rows)
+
+    async def handle_row(idx: int, row: Dict[str, Any]) -> None:
+        nonlocal completed
+        async with semaphore:
+            await asyncio.to_thread(
+                process_images,
+                [row],
+                columns,
+                image_search_column,
+                "",
+                image_count_value,
+                run_id,
+            )
+        if session_id:
+            async with progress_lock:
+                completed += 1
+                _update_progress(session_id, done=completed, total=total, status="running")
+
+    await asyncio.gather(*(handle_row(idx, row) for idx, row in enumerate(rows)))
+    return rows
+
+
+def process_rows_with_images_sync(
+    lines: List[Dict[str, Any]],
+    inputs: List[str],
+    tasks: List[str],
+    session_id: Optional[str],
+    total_lines: Optional[int],
+    run_id: Optional[str],
+    image_search_column: Optional[str],
+    image_count_value: Optional[int],
+    columns: List[str],
+) -> List[Dict[str, Any]]:
+    results: List[Dict[str, Any]] = []
+    completed = 0
+    total = total_lines or len(lines)
+    for row in lines:
+        row_copy = dict(row)
+        processed = process_rows([row_copy], inputs, tasks, None, 1, run_id)
+        processed_row = processed[0] if processed else row_copy
+        if image_search_column and image_count_value:
+            process_images(
+                [processed_row],
+                columns,
+                image_search_column,
+                "",
+                image_count_value,
+                run_id,
+            )
+        results.append(processed_row)
+        if session_id:
+            completed += 1
+            _update_progress(session_id, done=completed, total=total, status="running")
+    return results
+
+
+def process_images_sync(
+    rows: List[Dict[str, Any]],
+    columns: List[str],
+    image_search_column: str,
+    image_count_value: Optional[int],
+    session_id: Optional[str],
+    run_id: Optional[str],
+) -> List[Dict[str, Any]]:
+    completed = 0
+    total = len(rows)
+    for row in rows:
+        process_images(
+            [row],
+            columns,
+            image_search_column,
+            "",
+            image_count_value,
+            run_id,
+        )
+        if session_id:
+            completed += 1
+            _update_progress(session_id, done=completed, total=total, status="running")
+    return rows
 
 
 def process_payload(
@@ -1019,23 +1150,58 @@ def process_payload(
             if name not in columns:
                 columns.append(name)
 
+        if image_search_column and image_count_value:
+            _ensure_image_columns(columns)
+
         processed_rows = rows
         if tasks_list:
             try:
                 processed_rows = asyncio.run(
-                    process_rows_async(rows, inputs_list, tasks_list, session_id, len(rows), run_id)
+                    process_rows_async(
+                        rows,
+                        inputs_list,
+                        tasks_list,
+                        session_id,
+                        len(rows),
+                        run_id,
+                        image_search_column,
+                        image_count_value,
+                        columns,
+                    )
                 )
             except RuntimeError:
-                processed_rows = process_rows(rows, inputs_list, tasks_list, session_id, len(rows), run_id)
-        if image_search_column and image_count_value:
-            processed_rows = process_images(
-                processed_rows,
-                columns,
-                image_search_column,
-                "",
-                image_count_value,
-                run_id,
-            )
+                processed_rows = process_rows_with_images_sync(
+                    rows,
+                    inputs_list,
+                    tasks_list,
+                    session_id,
+                    len(rows),
+                    run_id,
+                    image_search_column,
+                    image_count_value,
+                    columns,
+                )
+        elif image_search_column and image_count_value:
+            try:
+                processed_rows = asyncio.run(
+                    process_images_async(
+                        processed_rows,
+                        columns,
+                        image_search_column,
+                        image_count_value,
+                        session_id,
+                        run_id,
+                    )
+                )
+            except RuntimeError:
+                processed_rows = process_images_sync(
+                    processed_rows,
+                    columns,
+                    image_search_column,
+                    image_count_value,
+                    session_id,
+                    run_id,
+                )
         if not tasks_list and not image_search_column:
             _update_progress(session_id, done=len(rows), total=len(rows), status="done")
 

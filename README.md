@@ -14,7 +14,7 @@
 
 Сервисы (см. `docker-compose.yaml`):
 
-- `frontend` — React UI, загружает файл и показывает прогресс.
+- `frontend` - React UI, основной сайт и админка (admin.strok1.ru).
 - `agent_server` — FastAPI + обработчик строк, LLM, интеграции поиска.
 - `postgres` — хранение сессий, загрузок, опросов.
 - `nginx` — reverse proxy и SSL.
