@@ -48,7 +48,7 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-changeme}
       ADMIN_SECRET: ${ADMIN_SECRET:-stroki_admin_secret_key_change_me}
     volumes:
-      - ./data/uploads:/app/uploads
+      - uploads_data:/app/uploads
       - ./logs:/logs
       - ./.env:/app/.env:ro
 
@@ -91,3 +91,4 @@ services:
 volumes:
   pgdata:
   pgadmin_data:
+  uploads_data:

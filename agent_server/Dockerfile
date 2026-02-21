@@ -13,6 +13,8 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 COPY . ./
 
+RUN mkdir -p /app/uploads && chown -R app:app /app/uploads
+
 USER app
 
 ENV PYTHONUNBUFFERED=1
